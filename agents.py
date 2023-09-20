@@ -23,7 +23,7 @@ AGENT_API = {
         "setup_training": ["self"],
         "game_events_occurred": ["self", "old_game_state: dict", "self_action: str", "new_game_state: dict", "events: List[str]"],
         # "enemy_game_events_occurred": ["self", "enemy_name: str", "old_enemy_game_state: dict", "enemy_action: str", "enemy_game_state: dict", "enemy_events: List[str]"],
-        "end_of_round": ["self", "last_game_state: dict", "last_action: str", "events: List[str]"]
+        "end_of_round": ["self", "last_game_state: dict", "last_action: str", "state_after_last_game_state: dict,","events: List[str]"]
     }
 }
 
@@ -130,6 +130,8 @@ class Agent:
         self.last_game_state = None
         self.last_action = None
 
+        self.state_after_last_game_state = None
+
     @property
     def base_timeout(self):
         return s.TRAIN_TIMEOUT if self.train else s.TIMEOUT
@@ -164,6 +166,9 @@ class Agent:
 #    def wait_for_enemy_game_event_processing(self):
 #        self.backend.get("enemy_game_events_occurred")
 
+    def store_state_after_game_state(self, game_state):
+        self.state_after_last_game_state = game_state
+
     def store_game_state(self, game_state):
         self.last_game_state = game_state
 
@@ -180,8 +185,9 @@ class Agent:
         self.last_action = action
         return action, think_time
 
+    # 结束回合，只在训练时调用,并且这里传递了方法所需的参数，也就是end_of_round方法需要的参数都在这里传递了
     def round_ended(self):
-        self.backend.send_event("end_of_round", self.last_game_state, self.last_action, self.events)
+        self.backend.send_event("end_of_round", self.last_game_state, self.last_action, self.state_after_last_game_state, self.events)
         self.backend.get("end_of_round")
 
     def render(self, screen, x, y):
@@ -245,6 +251,7 @@ class AgentRunner:
         try:
             self.wlogger.debug(f"Calling {event_name} on callback.")
             start_time = time()
+            # 获取event_name方法，后面加括号可以将这个方法运行
             event_result = getattr(module, event_name)(self.fake_self, *event_args)
             duration = time() - start_time
             self.wlogger.debug(f"Got result from callback#{event_name} in {duration:.3f}s.")

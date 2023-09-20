@@ -11,6 +11,8 @@ from typing import List, Tuple, Dict
 
 import numpy as np
 
+from agent_code.rule_based_agent.callbacks import act as chosen_by_rule
+
 import events as e
 import settings as s
 from agents import Agent, SequentialAgentBackend
@@ -125,7 +127,82 @@ class GenericWorld:
                 is_free = is_free and (obstacle.x != x or obstacle.y != y)
         return is_free
 
+
+    def BFS(self, self_pos, field, goal):
+
+        directions = [(0, -1), (1, 0), (0, 1), (-1, 0)]
+
+        queue = [self_pos]
+        parents = np.ones((*field.shape, 2), dtype=int) * -1
+        current_pos = queue.pop(0)
+
+        while field[current_pos[0], current_pos[1]] != goal:
+            for i, j in directions:
+                neighbor = current_pos + np.array([i, j])
+                n_x, n_y = neighbor
+                if not (field[n_x, n_y] == 0
+                        or field[n_x, n_y] == goal):
+                    continue
+                if parents[n_x, n_y][0] == -1:
+                    parents[n_x, n_y] = current_pos
+                else:
+                    continue
+                queue.append(neighbor)
+            if len(queue) == 0:
+                break
+            else:
+                current_pos = queue.pop(0)
+        
+        if field[current_pos[0], current_pos[1]] != goal:
+            return 'None'
+        
+        if np.all(current_pos == self_pos):
+            return 'None'
+
+        while np.any(parents[current_pos[0], current_pos[1]] != self_pos):
+            current_pos = parents[current_pos[0], current_pos[1]]
+        
+        diff = current_pos - self_pos
+
+        # X coordinate to the left
+        if diff[0] < 0:
+            return 'left'
+
+        # X coordinate to the right
+        if diff[0] > 0:
+            return 'RIGHT'
+
+        # Y coordinate Up
+        if diff[1] < 0:
+            return 'UP'
+
+        # Y coordinate Down
+        if diff[1] > 0:
+            return 'down'
+    
     def perform_agent_action(self, agent: Agent, action: str):
+        
+        state = self.get_state_for_agent(agent)
+        _, score, bombs_left, (x, y) = state['self']
+        arena = state['field']
+        coins = state['coins']
+        for cx, cy in coins:
+            arena[cx, cy] = 5
+            
+        coin_direction = self.BFS((x,y), arena, 5)
+        if action == coin_direction:
+            agent.add_event(e.ClOSING_COIN)
+            # print("closing to coin")
+
+        # rule_based_action = chosen_by_rule(agent,state)
+
+        # print("rule_based_action = ", rule_based_action)
+        # print("my action  = ", action)
+        # if action == rule_based_action:
+        #     agent.add_event(e.SAME_AS_RULE)
+        #     print("same as rule set")
+            
+
         # Perform the specified action if possible, wait otherwise
         if action == 'UP' and self.tile_is_free(agent.x, agent.y - 1):
             agent.y -= 1
@@ -148,6 +225,7 @@ class GenericWorld:
             agent.add_event(e.WAITED)
         else:
             agent.add_event(e.INVALID_ACTION)
+        
 
     def poll_and_run_agents(self):
         raise NotImplementedError()
@@ -171,6 +249,7 @@ class GenericWorld:
         self.update_explosions()
         self.update_bombs()
         self.evaluate_explosions()
+        # 只发给活着的agent
         self.send_game_events()
 
         if self.time_to_stop():
@@ -257,9 +336,10 @@ class GenericWorld:
                             explosion.owner.add_event(e.KILLED_OPPONENT)
                             explosion.owner.trophies.append(pygame.transform.smoothscale(a.avatar, (15, 15)))
 
-        # Remove hit agents
+        # Remove hit agents agent 即将被删除，这里是为他获取game state 的最后机会
         for a in agents_hit:
             a.dead = True
+            a.store_state_after_game_state(self.get_state_for_agent(a))
             self.active_agents.remove(a)
             a.add_event(e.GOT_KILLED)
             for aa in self.active_agents:
@@ -394,19 +474,29 @@ class BombeRLeWorld(GenericWorld):
         return arena, coins, active_agents
 
     def get_state_for_agent(self, agent: Agent):
-        if agent.dead:
-            return None
-
-        state = {
-            'round': self.round,
-            'step': self.step,
-            'field': np.array(self.arena),
-            'self': agent.get_state(),
-            'others': [other.get_state() for other in self.active_agents if other is not agent],
-            'bombs': [bomb.get_state() for bomb in self.bombs],
-            'coins': [coin.get_state() for coin in self.coins if coin.collectable],
-            'user_input': self.user_input,
-        }
+        
+        if not agent.dead:
+            state = {
+                'round': self.round,
+                'step': self.step,
+                'field': np.array(self.arena),
+                'self': agent.get_state(),
+                'others': [other.get_state() for other in self.active_agents if other is not agent],
+                'bombs': [bomb.get_state() for bomb in self.bombs],
+                'coins': [coin.get_state() for coin in self.coins if coin.collectable],
+                'user_input': self.user_input,
+            }
+        else:
+            state = {
+                'round': self.round,
+                'step': self.step,
+                'field': np.array(self.arena),
+                'self': None,
+                'others': [other.get_state() for other in self.active_agents if other is not agent],
+                'bombs': [bomb.get_state() for bomb in self.bombs],
+                'coins': [coin.get_state() for coin in self.coins if coin.collectable],
+                'user_input': self.user_input,
+            }
 
         explosion_map = np.zeros(self.arena.shape)
         for exp in self.explosions:
@@ -421,6 +511,7 @@ class BombeRLeWorld(GenericWorld):
         # Tell agents to act
         for a in self.active_agents:
             state = self.get_state_for_agent(a)
+            # 生成了 last game state
             a.store_game_state(state)
             a.reset_game_events()
             if a.available_think_time > 0:
